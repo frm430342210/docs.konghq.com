@@ -34,37 +34,80 @@ Kong will detect and load your endpoints if they are defined in a module named:
 "kong.plugins.<plugin_name>.api"
 ```
 
-This module is bound to return a table containing strings describing your
-routes (See [Lapis routes & URL
-Patterns](http://leafo.net/lapis/reference/actions.html#routes--url-patterns))
-and HTTP verbs they support. Routes are then assigned a simple handler
-function.
+This module is bound to return a table with one or more entries with the following structure:
 
-This table is then fed to Lapis (See Lapis' [handling HTTP verbs
-documentation](http://leafo.net/lapis/reference/actions.html#handling-http-verbs)).
-Example:
-
-```lua
-return {
-  ["/my-plugin/new/get/endpoint"] = {
-    GET = function(self, dao_factory, helpers)
-      -- ...
-    end
-  }
+``` lua
+{
+  ["<path>"] = {
+     schema = <schema>,
+     methods = {
+       <method1> = <function1>,
+       <method2> = <function2>,
+       ...
+     }
+  },
+  ...
 }
 ```
 
-The handler function takes three arguments, which are, in order:
+Where:
+
+- `path` would be a string representing a route like `/users` (See [Lapis routes & URL
+  Patterns](http://leafo.net/lapis/reference/actions.html#routes--url-patterns)) for details.
+  Notice that the path can contain interpolation parameters, like `/users/:users/new`.
+- `schema` is a schema definition. Schemas for core and custom plugin entities are available
+  via `kong.db.<entity>.schema`. The schema is used to parse certain fields according to their
+  types; for example if a field is marked as an integer, it will be parsed as such when it is
+  passed to a function (by default form fields are all strings).
+- `method1` and `method2` are strings representing the usual HTTP methods: `GET`, `POST`, etc.
+   The special strings `before` and `on_error` can also be used (described below)
+- `function1` and `function2` describe what to do when a particular path-method combination is matched
+  (or for the special `before` function). They can be Lua functions, but often the `kong.api.endpoints` module provides some default
+  implementation that is appropiate.
+
+For example:
+
+``` lua
+local endpoints = require "kong.api.endpoints"
+
+local credentials_schema = kong.db.keyauth_credentials.schema
+local consumers_schema = kong.db.consumers.schema
+
+return {
+  ["/consumers/:consumers/key-auth"] = {
+    schema = credentials_schema,
+    methods = {
+      GET = endpoints.get_collection_endpoint(
+              credentials_schema, consumers_schema, "consumer"),
+
+      POST = endpoints.post_collection_endpoint(
+              credentials_schema, consumers_schema, "consumer"),
+    },
+  },
+}
+```
+
+This code will create two Admin API endpoints in `/consumers/:consumers/key-auth`, to
+obtain (`GET`) and create (`POST`) credentials associated to a given consumer. On this example
+the functions are provided by the `kong.api.endpoints` library. If you want to see a more
+complete example, with custom code in functions, see
+[the real keyauth `api.lua` file](https://github.com/Kong/kong/blob/master/kong/plugins/key-auth/api.lua).
+
+The `endpoints` module currently contains the default implementation for the most usual CRUD
+operations used in Kong. This module provides you with helpers for any insert, retrieve,
+update or delete operations and performs the necessary DAO operations and replies with
+the appropriate HTTP status codes. It also provides you with functions to retrieve parameters from
+the path, such as an API's name or id, or a Consumer's username or id.
+
+For those cases where the provided default functions are not enough, you can write your own
+handler functions in Lua as well. They take three arguments, which are, in order:
 
 - `self`: The request object. See [Lapis request
   object](http://leafo.net/lapis/reference/actions.html#request-object)
-- `dao_factory`: The DAO Factory. See the
-  [datastore]({{page.book.chapters.access-the-datastore}}) chapter of this
-  guide.
-- `helpers`: A table containing a few helpers, described below.
+- `db`: A shortcut to `kong.db`. It was mainly used before Kong 1.0
+- `helpers`: A table containing a few helpers. Currently superseeded by the Kong PDK.
 
-In addition to the HTTPS verbs it supports, a route table can also contain two
-other keys:
+In addition to the HTTPS verbs, methods can have two special values:
 
 - **before**: as in
   [Lapis](http://leafo.net/lapis/reference/actions.html#handling-http-verbs), a
@@ -73,61 +116,6 @@ other keys:
   by Kong. See Lapis' [capturing recoverable
   errors](http://leafo.net/lapis/reference/exception_handling.html#capturing-recoverable-errors)
   documentation.
-
----
-
-## Helpers
-
-When handling a request on the Admin API, there are times when you want to send
-back responses and handle errors, to help you do so the third parameter
-`helpers` is a table with the following properties:
-
-- `responses`: a module with helper functions to send HTTP responses.
-- `yield_error`: the
-  [yield_error](http://leafo.net/lapis/reference/exception_handling.html#capturing-recoverable-errors)
-  function from Lapis. To call when your handler encounters an error (from a
-  DAO, for example). Since all Kong errors are tables with context, it can send
-  the appropriate response code depending on the error (Internal Server Error,
-  Bad Request, etc...).
-
-### crud_helpers
-
-Since most of the operations you will perform in your endpoints will be CRUD
-operations, you can also use the `kong.api.crud_helpers` module. This module
-provides you with helpers for any insert, retrieve, update or delete operations
-and performs the necessary DAO operations and replies with the appropriate HTTP
-status codes. It also provides you with functions to retrieve parameters from
-the path, such as an API's name or id, or a Consumer's username or id.
-
-Example:
-
-```lua
-local crud = require "kong.api.crud_helpers"
-
-return {
-  ["/consumers/:username_or_id/key-auth/"] = {
-    before = function(self, dao_factory, helpers)
-      crud.find_consumer_by_username_or_id(self, dao_factory, helpers)
-      self.params.consumer_id = self.consumer.id
-    end,
-
-    GET = function(self, dao_factory, helpers)
-      crud.paginated_set(self, dao_factory.keyauth_credentials)
-    end,
-
-    PUT = function(self, dao_factory)
-      crud.put(self.params, dao_factory.keyauth_credentials)
-    end,
-
-    POST = function(self, dao_factory)
-      crud.post(self.params, dao_factory.keyauth_credentials)
-    end
-  }
-}
-```
-
-See the [complete Admin API of the Key-Auth plugin](https://github.com/Kong/kong/blob/master/kong/plugins/key-auth/api.lua)
-for an extended version of this example.
 
 ---
 
